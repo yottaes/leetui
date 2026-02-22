@@ -1,11 +1,11 @@
 use anyhow::Result;
 use crossterm::event::KeyCode;
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
-    Frame,
 };
 use std::path::PathBuf;
 use std::process::Command;
@@ -16,8 +16,8 @@ use crate::api::types::{CheckResponse, FavoriteList, ProblemSummary, QuestionDet
 use crate::config::Config;
 use crate::event::{Event, EventHandler};
 use crate::scaffold;
-use crate::ui::home::{self, HomeAction, HomeState};
 use crate::ui::detail::{self, DetailAction, DetailState};
+use crate::ui::home::{self, HomeAction, HomeState};
 use crate::ui::lists::{self, ListsAction, ListsState};
 use crate::ui::result::{self, ResultAction, ResultData, ResultKind, ResultState};
 use crate::ui::setup::{self, SetupAction, SetupState};
@@ -197,7 +197,10 @@ impl App {
         // Add-to-list popup overlay
         if let Some(ref popup) = self.add_to_list_popup {
             let overlay_width = 44u16.min(area.width.saturating_sub(4));
-            let overlay_height = (popup.lists.len() as u16 + 4).min(16).max(5).min(area.height.saturating_sub(4));
+            let overlay_height = (popup.lists.len() as u16 + 4)
+                .min(16)
+                .max(5)
+                .min(area.height.saturating_sub(4));
             let x = area.x + (area.width.saturating_sub(overlay_width)) / 2;
             let y = area.y + (area.height.saturating_sub(overlay_height)) / 2;
             let overlay_area = Rect::new(x, y, overlay_width, overlay_height);
@@ -205,7 +208,10 @@ impl App {
             frame.render_widget(Clear, overlay_area);
 
             if popup.loading {
-                let spinner = ["\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}"];
+                let spinner = [
+                    "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}",
+                    "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}",
+                ];
                 let s = spinner[0];
                 let p = Paragraph::new(format!("\n {s} Loading lists..."))
                     .block(
@@ -217,15 +223,17 @@ impl App {
                     .style(Style::default().fg(Color::Yellow));
                 frame.render_widget(p, overlay_area);
             } else if popup.lists.is_empty() {
-                let p = Paragraph::new("\n No lists found.\n Create one from Lists (L) first.\n\n Esc: Close")
-                    .block(
-                        Block::default()
-                            .title(" Add to List ")
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(Color::Cyan)),
-                    )
-                    .style(Style::default().fg(Color::White))
-                    .wrap(Wrap { trim: true });
+                let p = Paragraph::new(
+                    "\n No lists found.\n Create one from Lists (L) first.\n\n Esc: Close",
+                )
+                .block(
+                    Block::default()
+                        .title(" Add to List ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Cyan)),
+                )
+                .style(Style::default().fg(Color::White))
+                .wrap(Wrap { trim: true });
                 frame.render_widget(p, overlay_area);
             } else {
                 let inner_area = Rect::new(
@@ -250,7 +258,9 @@ impl App {
                         let selected = i == popup.selected;
                         let prefix = if selected { "\u{25b8} " } else { "  " };
                         let style = if selected {
-                            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD)
                         } else {
                             Style::default().fg(Color::White)
                         };
@@ -282,11 +292,7 @@ impl App {
             let toast_area = Rect::new(x, y, w, 1);
             frame.render_widget(Clear, toast_area);
             frame.render_widget(
-                Paragraph::new(text).style(
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Green),
-                ),
+                Paragraph::new(text).style(Style::default().fg(Color::Black).bg(Color::Green)),
                 toast_area,
             );
         }
@@ -393,12 +399,11 @@ impl App {
                     Line::from(vec![
                         Span::styled(
                             format!("  {:>width$}", key, width = max_key_len),
-                            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(
-                            format!("  {desc}"),
-                            Style::default().fg(Color::White),
-                        ),
+                        Span::styled(format!("  {desc}"), Style::default().fg(Color::White)),
                     ])
                 })
                 .collect();
@@ -429,14 +434,21 @@ impl App {
     ) -> Result<()> {
         // Global quit: Ctrl+C always exits
         if key.code == KeyCode::Char('c')
-            && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+            && key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL)
         {
             self.should_quit = true;
             return Ok(());
         }
 
         // Toggle help overlay
-        if key.code == KeyCode::Char('?') && !self.login_prompt && !self.login_waiting && self.error_overlay.is_none() && self.add_to_list_popup.is_none() {
+        if key.code == KeyCode::Char('?')
+            && !self.login_prompt
+            && !self.login_waiting
+            && self.error_overlay.is_none()
+            && self.add_to_list_popup.is_none()
+        {
             self.help_overlay = !self.help_overlay;
             return Ok(());
         }
@@ -460,7 +472,7 @@ impl App {
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     self.login_prompt = false;
-                    self.do_browser_login();
+                    self.browser_login();
                     self.start_fetch_user_stats();
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
@@ -512,7 +524,8 @@ impl App {
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
                     if !popup.lists.is_empty() {
-                        popup.selected = (popup.selected + popup.lists.len() - 1) % popup.lists.len();
+                        popup.selected =
+                            (popup.selected + popup.lists.len() - 1) % popup.lists.len();
                     }
                 }
                 KeyCode::Enter => {
@@ -540,8 +553,16 @@ impl App {
             match action {
                 SetupAction::Submit => {
                     if let Screen::Setup(ref state) = self.screen {
-                        let session = if state.fields[3].is_empty() { None } else { Some(state.fields[3].clone()) };
-                        let csrf = if state.fields[4].is_empty() { None } else { Some(state.fields[4].clone()) };
+                        let session = if state.fields[3].is_empty() {
+                            None
+                        } else {
+                            Some(state.fields[3].clone())
+                        };
+                        let csrf = if state.fields[4].is_empty() {
+                            None
+                        } else {
+                            Some(state.fields[4].clone())
+                        };
                         let config = Config {
                             workspace_dir: state.fields[0].clone(),
                             language: state.fields[1].clone(),
@@ -569,7 +590,7 @@ impl App {
                     self.restore_home();
                 }
                 SetupAction::BrowserLogin => {
-                    self.do_browser_login();
+                    self.browser_login();
                     if let Screen::Setup(ref mut s) = self.screen {
                         if let Some(ref config) = self.config {
                             s.fields[3] = config.leetcode_session.clone().unwrap_or_default();
@@ -598,10 +619,7 @@ impl App {
                 }
                 HomeAction::Lists => {
                     // Save home state and switch to lists
-                    let old = std::mem::replace(
-                        &mut self.screen,
-                        Screen::Lists(ListsState::new()),
-                    );
+                    let old = std::mem::replace(&mut self.screen, Screen::Lists(ListsState::new()));
                     if let Screen::Home(home) = old {
                         self.saved_home = Some(home);
                     }
@@ -660,16 +678,14 @@ impl App {
                     DetailAction::None => {}
                 }
             }
-            Screen::Result(state) => {
-                match state.handle_key(key) {
-                    ResultAction::Back => {
-                        let detail = state.detail.clone();
-                        self.screen = Screen::Detail(DetailState::new(detail));
-                    }
-                    ResultAction::Quit => self.should_quit = true,
-                    ResultAction::None => {}
+            Screen::Result(state) => match state.handle_key(key) {
+                ResultAction::Back => {
+                    let detail = state.detail.clone();
+                    self.screen = Screen::Detail(DetailState::new(detail));
                 }
-            }
+                ResultAction::Quit => self.should_quit = true,
+                ResultAction::None => {}
+            },
             Screen::Lists(state) => {
                 let action = state.handle_key(key);
                 match action {
@@ -685,7 +701,10 @@ impl App {
                     ListsAction::DeleteList(id_hash) => {
                         self.start_delete_list(&id_hash);
                     }
-                    ListsAction::RemoveProblem { id_hash, question_id } => {
+                    ListsAction::RemoveProblem {
+                        id_hash,
+                        question_id,
+                    } => {
                         self.start_remove_from_list(&id_hash, &question_id);
                     }
                     ListsAction::None => {}
@@ -723,7 +742,11 @@ impl App {
 
     fn handle_api_result(&mut self, result: ApiResult) {
         match result {
-            ApiResult::ProblemBatch { problems, total, done } => {
+            ApiResult::ProblemBatch {
+                problems,
+                total,
+                done,
+            } => {
                 // Resolve target: active Home screen or saved_home
                 let state = if let Screen::Home(ref mut s) = self.screen {
                     Some(s)
@@ -762,10 +785,8 @@ impl App {
             }
             ApiResult::Detail(Ok(detail)) => {
                 // Save current screen state before switching to detail
-                let old = std::mem::replace(
-                    &mut self.screen,
-                    Screen::Detail(DetailState::new(detail)),
-                );
+                let old =
+                    std::mem::replace(&mut self.screen, Screen::Detail(DetailState::new(detail)));
                 match old {
                     Screen::Home(home) => self.saved_home = Some(home),
                     Screen::Lists(lists) => self.saved_lists = Some(lists),
@@ -876,7 +897,8 @@ impl App {
                     let result = client.fetch_problems(BATCH, skip, None, None).await;
                     match result {
                         Ok((batch, total)) => {
-                            let done = (batch.len() as i32) < BATCH || skip + (batch.len() as i32) >= total;
+                            let done = (batch.len() as i32) < BATCH
+                                || skip + (batch.len() as i32) >= total;
                             let _ = tx.send(ApiResult::ProblemBatch {
                                 problems: batch,
                                 total,
@@ -1024,7 +1046,10 @@ impl App {
     }
 
     fn read_user_code(&self, detail: &QuestionDetail) -> Result<String> {
-        let config = self.config.as_ref().ok_or_else(|| anyhow::anyhow!("No config loaded"))?;
+        let config = self
+            .config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No config loaded"))?;
         let workspace = config.expanded_workspace();
         let dir_name = format!("{}-{}", detail.frontend_question_id, detail.title_slug);
         let file_path = match config.language.as_str() {
@@ -1038,8 +1063,12 @@ impl App {
             _ => workspace.join(&dir_name).join("src").join("main.rs"),
         };
 
-        let content = std::fs::read_to_string(&file_path)
-            .map_err(|e| anyhow::anyhow!("Failed to read code from {}: {e}\nScaffold the problem first with 'o'", file_path.display()))?;
+        let content = std::fs::read_to_string(&file_path).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to read code from {}: {e}\nScaffold the problem first with 'o'",
+                file_path.display()
+            )
+        })?;
 
         if config.language.eq_ignore_ascii_case("rust") {
             return extract_rust_solution(&content);
@@ -1086,9 +1115,16 @@ impl App {
         };
 
         // Get test input from example testcases
-        let data_input = detail.example_testcase_list
+        let data_input = detail
+            .example_testcase_list
             .as_ref()
-            .and_then(|v| if v.is_empty() { None } else { Some(v.join("\n")) })
+            .and_then(|v| {
+                if v.is_empty() {
+                    None
+                } else {
+                    Some(v.join("\n"))
+                }
+            })
             .or_else(|| detail.sample_test_case.clone())
             .unwrap_or_default();
 
@@ -1103,9 +1139,12 @@ impl App {
 
         tokio::spawn(async move {
             let result = async {
-                let interpret_id = client.run_code(&slug, &question_id, &lang, &code, &data_input).await?;
+                let interpret_id = client
+                    .run_code(&slug, &question_id, &lang, &code, &data_input)
+                    .await?;
                 client.poll_result(&interpret_id).await
-            }.await;
+            }
+            .await;
             let _ = tx.send(ApiResult::RunResult(result));
         });
     }
@@ -1143,9 +1182,12 @@ impl App {
 
         tokio::spawn(async move {
             let result = async {
-                let submission_id = client.submit_code(&slug, &question_id, &lang, &code).await?;
+                let submission_id = client
+                    .submit_code(&slug, &question_id, &lang, &code)
+                    .await?;
                 client.poll_result(&submission_id).await
-            }.await;
+            }
+            .await;
             let _ = tx.send(ApiResult::SubmitResult(result));
         });
     }
@@ -1168,7 +1210,10 @@ impl App {
 
         match scaffold::scaffold_problem(&workspace, detail, &config.language) {
             Ok(file_path) => {
-                let project_dir = file_path.parent().and_then(|p| p.parent()).unwrap_or(&workspace);
+                let project_dir = file_path
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .unwrap_or(&workspace);
                 self.last_opened_dir = Some(project_dir.to_path_buf());
 
                 ratatui::restore();
@@ -1183,12 +1228,13 @@ impl App {
                 match status {
                     Ok(s) if s.success() => {}
                     Ok(s) => {
-                        self.error_overlay =
-                            Some(format!("Editor exited with status: {}", s));
+                        self.error_overlay = Some(format!("Editor exited with status: {}", s));
                     }
                     Err(e) => {
-                        self.error_overlay =
-                            Some(format!("Failed to launch editor '{}': {}", config.editor, e));
+                        self.error_overlay = Some(format!(
+                            "Failed to launch editor '{}': {}",
+                            config.editor, e
+                        ));
                     }
                 }
             }
@@ -1200,12 +1246,11 @@ impl App {
         Ok(())
     }
 
-    fn do_browser_login(&mut self) {
+    fn browser_login(&mut self) {
         let domains = vec!["leetcode.com".to_string()];
         let cookies = match rookie::load(Some(domains)) {
             Ok(c) => c,
             Err(_) => {
-                // Cookie extraction failed — open browser and wait for retry
                 let _ = Command::new("open")
                     .arg("https://leetcode.com/accounts/login/")
                     .spawn();
@@ -1214,8 +1259,14 @@ impl App {
             }
         };
 
-        let session = cookies.iter().find(|c| c.name == "LEETCODE_SESSION").map(|c| c.value.clone());
-        let csrf = cookies.iter().find(|c| c.name == "csrftoken").map(|c| c.value.clone());
+        let session = cookies
+            .iter()
+            .find(|c| c.name == "LEETCODE_SESSION")
+            .map(|c| c.value.clone());
+        let csrf = cookies
+            .iter()
+            .find(|c| c.name == "csrftoken")
+            .map(|c| c.value.clone());
 
         if session.is_none() || csrf.is_none() {
             // No cookies found — open browser and wait for retry
@@ -1244,8 +1295,14 @@ impl App {
             }
         };
 
-        let session = cookies.iter().find(|c| c.name == "LEETCODE_SESSION").map(|c| c.value.clone());
-        let csrf = cookies.iter().find(|c| c.name == "csrftoken").map(|c| c.value.clone());
+        let session = cookies
+            .iter()
+            .find(|c| c.name == "LEETCODE_SESSION")
+            .map(|c| c.value.clone());
+        let csrf = cookies
+            .iter()
+            .find(|c| c.name == "csrftoken")
+            .map(|c| c.value.clone());
 
         if session.is_none() || csrf.is_none() {
             self.error_overlay = Some(
@@ -1344,12 +1401,11 @@ fn extract_rust_solution(content: &str) -> Result<String> {
             if let Some(name_node) = child.child_by_field_name("name") {
                 let name = &content[name_node.byte_range()];
                 if name == "Solution" {
-                    let has_fields = child.child_by_field_name("body")
-                        .is_some_and(|body| {
-                            let mut bc = body.walk();
-                            body.children(&mut bc)
-                                .any(|c| c.kind() == "field_declaration")
-                        });
+                    let has_fields = child.child_by_field_name("body").is_some_and(|body| {
+                        let mut bc = body.walk();
+                        body.children(&mut bc)
+                            .any(|c| c.kind() == "field_declaration")
+                    });
                     if !has_fields {
                         continue;
                     }
