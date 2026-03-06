@@ -1,4 +1,22 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
+
+fn deserialize_string_or_vec<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Option::<Value>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(Value::Array(arr)) => Ok(Some(
+            arr.into_iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect(),
+        )),
+        Some(Value::String(s)) if s.is_empty() => Ok(None),
+        Some(Value::String(s)) => Ok(Some(vec![s])),
+        Some(_) => Ok(None),
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct GraphQLResponse<T> {
@@ -91,8 +109,11 @@ pub struct CheckResponse {
     pub state: String,
     pub status_msg: Option<String>,
     pub status_code: Option<i32>,
+    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
     pub code_answer: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
     pub expected_code_answer: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
     pub code_output: Option<Vec<String>>,
     pub expected_output: Option<String>,
     pub last_testcase: Option<String>,

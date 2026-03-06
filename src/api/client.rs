@@ -223,10 +223,15 @@ impl LeetCodeClient {
             .await
             .context("Failed to send check request")?;
 
-        let data: CheckResponse = resp
-            .json()
-            .await
-            .context("Failed to parse check response")?;
+        let status = resp.status();
+        let body = resp.text().await.context("Failed to read check response body")?;
+
+        if !status.is_success() {
+            bail!("LeetCode returned HTTP {status} for check: {body}");
+        }
+
+        let data: CheckResponse = serde_json::from_str(&body)
+            .with_context(|| format!("Failed to parse check response: {body}"))?;
 
         Ok(data)
     }
