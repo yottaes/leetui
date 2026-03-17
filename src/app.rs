@@ -31,17 +31,12 @@ pub enum Screen {
 }
 
 pub enum ApiResult {
-    ProblemBatch {
-        problems: Vec<ProblemSummary>,
-        total: i32,
-        done: bool,
-    },
     Detail(Result<QuestionDetail>),
     RunResult(Result<CheckResponse>),
     SubmitResult(Result<CheckResponse>),
     UserStats(Option<UserStats>),
+    AuthExpired,
     SearchResult(Result<(Vec<ProblemSummary>, i32)>),
-    ProblemFetchError(String),
     Favorites(Result<Vec<FavoriteList>>),
     ListMutation(Result<()>, String), // (result, success_message)
     PopupFavorites(Result<Vec<FavoriteList>>),
@@ -70,27 +65,32 @@ pub struct App {
     api_client: LeetCodeClient,
     api_tx: mpsc::UnboundedSender<ApiResult>,
     api_rx: mpsc::UnboundedReceiver<ApiResult>,
+    search_debounce: Option<tokio::time::Instant>,
+    pending_search_query: Option<String>,
 }
 
 impl App {
     pub fn new(config: Option<Config>) -> Result<Self> {
         let (api_tx, api_rx) = mpsc::unbounded_channel();
+
+        // If no config exists, create one with sensible defaults
+        let config = match config {
+            Some(c) => c,
+            None => Config::create_default()?,
+        };
+
         let api_client = LeetCodeClient::new(
-            config.as_ref().and_then(|c| c.leetcode_session.as_deref()),
-            config.as_ref().and_then(|c| c.csrf_token.as_deref()),
+            config.leetcode_session.as_deref(),
+            config.csrf_token.as_deref(),
         )?;
 
-        let login_prompt = config.as_ref().is_some_and(|c| !c.is_authenticated());
+        let login_prompt = !config.is_authenticated();
 
-        let screen = if config.is_some() {
-            Screen::Home(HomeState::new())
-        } else {
-            Screen::Setup(SetupState::new())
-        };
+        let screen = Screen::Home(HomeState::new());
 
         Ok(Self {
             screen,
-            config,
+            config: Some(config),
             should_quit: false,
             error_overlay: None,
             success_message: None,
@@ -104,6 +104,8 @@ impl App {
             api_client,
             api_tx,
             api_rx,
+            search_debounce: None,
+            pending_search_query: None,
         })
     }
 
@@ -113,7 +115,6 @@ impl App {
         events: &mut EventHandler,
     ) -> Result<()> {
         if matches!(self.screen, Screen::Home(_)) {
-            self.start_fetch_problems();
             self.start_fetch_user_stats();
         }
 
@@ -134,6 +135,15 @@ impl App {
                 }
                 Some(api_result) = self.api_rx.recv() => {
                     self.handle_api_result(api_result);
+                }
+                _ = async {
+                    if let Some(deadline) = self.search_debounce {
+                        tokio::time::sleep_until(deadline).await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                }, if self.search_debounce.is_some() => {
+                    self.fire_search();
                 }
             }
         }
@@ -322,27 +332,27 @@ impl App {
         if self.help_overlay {
             let help_text = match &self.screen {
                 Screen::Home(state) => {
-                    if state.search_mode {
-                        vec![
-                            ("Enter", "Apply search / open selected"),
-                            ("Esc", "Cancel search"),
-                            ("\u{2191}/\u{2193}", "Navigate results"),
-                            ("Backspace", "Delete char (empty exits)"),
-                        ]
-                    } else if state.filter.open {
+                    if state.filter.open {
                         vec![
                             ("j/k", "Navigate filters"),
                             ("Space", "Toggle filter"),
                             ("Esc/Enter/f", "Close filter"),
                         ]
+                    } else if matches!(state.focus, home::HomeFocus::Search) {
+                        vec![
+                            ("Enter", "Search / go to results"),
+                            ("Tab/\u{2193}", "Go to results table"),
+                            ("Esc", "Clear search"),
+                            ("type", "Search problems"),
+                        ]
                     } else {
                         vec![
-                            ("j/k/\u{2191}/\u{2193}", "Navigate problems"),
+                            ("j/k/\u{2191}/\u{2193}", "Navigate results"),
                             ("g/G", "Jump to top / bottom"),
                             ("Enter", "View problem detail"),
                             ("o", "Scaffold & open in editor"),
                             ("a", "Add to list"),
-                            ("/", "Search"),
+                            ("/", "Back to search"),
                             ("f", "Filter by difficulty"),
                             ("L", "Browse lists"),
                             ("S", "Settings"),
@@ -392,7 +402,7 @@ impl App {
                 ],
             };
 
-            let max_key_len = help_text.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+            let max_key_len: usize = help_text.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
             let lines: Vec<Line> = help_text
                 .iter()
                 .map(|(key, desc)| {
@@ -582,7 +592,6 @@ impl App {
                             }
                             self.config = Some(config);
                             self.screen = Screen::Home(HomeState::new());
-                            self.start_fetch_problems();
                             self.start_fetch_user_stats();
                         }
                     }
@@ -616,7 +625,11 @@ impl App {
                     self.start_fetch_detail_for_scaffold(&slug, terminal)?;
                 }
                 HomeAction::SearchFetch(query) => {
-                    self.start_search_fetch(&query);
+                    if let Screen::Home(ref mut state) = self.screen {
+                        state.search_loading = true;
+                    }
+                    self.pending_search_query = Some(query);
+                    self.search_debounce = Some(tokio::time::Instant::now() + std::time::Duration::from_millis(300));
                 }
                 HomeAction::Lists => {
                     // Save home state and switch to lists
@@ -743,47 +756,6 @@ impl App {
 
     fn handle_api_result(&mut self, result: ApiResult) {
         match result {
-            ApiResult::ProblemBatch {
-                problems,
-                total,
-                done,
-            } => {
-                // Resolve target: active Home screen or saved_home
-                let state = if let Screen::Home(ref mut s) = self.screen {
-                    Some(s)
-                } else {
-                    self.saved_home.as_mut()
-                };
-                if let Some(state) = state {
-                    state.loading_buffer.extend(problems);
-                    state.total_problems = total;
-                    if done {
-                        state.loading = false;
-                        state.problems = std::mem::take(&mut state.loading_buffer);
-                        state.rebuild_filter();
-                        let problems = state.problems.clone();
-                        tokio::spawn(async move {
-                            save_problems_cache(&problems);
-                        });
-                    } else if state.problems.is_empty() {
-                        // No cache — show what we have so far
-                        state.problems = state.loading_buffer.clone();
-                        state.rebuild_filter();
-                    }
-                    state.error_message = None;
-                }
-            }
-            ApiResult::ProblemFetchError(e) => {
-                let state = if let Screen::Home(ref mut s) = self.screen {
-                    Some(s)
-                } else {
-                    self.saved_home.as_mut()
-                };
-                if let Some(state) = state {
-                    state.loading = false;
-                    state.error_message = Some(e);
-                }
-            }
             ApiResult::Detail(Ok(detail)) => {
                 // Save current screen state before switching to detail
                 let old =
@@ -815,15 +787,42 @@ impl App {
                     state.user_stats = stats;
                 }
             }
-            ApiResult::SearchResult(Ok((problems, _))) => {
-                if let Some(p) = problems.first() {
-                    self.start_fetch_detail(&p.title_slug.clone());
+            ApiResult::AuthExpired => {
+                // Tokens exist but are invalid/expired — clear them and prompt re-login
+                if let Some(ref mut config) = self.config {
+                    config.leetcode_session = None;
+                    config.csrf_token = None;
+                    let _ = config.save();
+                }
+                self.login_prompt = true;
+            }
+            ApiResult::SearchResult(Ok((problems, total))) => {
+                let state = if let Screen::Home(ref mut s) = self.screen {
+                    Some(s)
                 } else {
-                    self.error_overlay = Some("Problem not found.".to_string());
+                    self.saved_home.as_mut()
+                };
+                if let Some(state) = state {
+                    state.problems = problems;
+                    state.search_total = total;
+                    state.search_loading = false;
+                    state.error_message = None;
+                    state.rebuild_filter();
+                    if !state.filtered_indices.is_empty() {
+                        state.table_state.select(Some(0));
+                    }
                 }
             }
             ApiResult::SearchResult(Err(e)) => {
-                self.error_overlay = Some(format!("Search failed: {e}"));
+                let state = if let Screen::Home(ref mut s) = self.screen {
+                    Some(s)
+                } else {
+                    self.saved_home.as_mut()
+                };
+                if let Some(state) = state {
+                    state.search_loading = false;
+                    state.error_message = Some(format!("{e}"));
+                }
             }
             ApiResult::Favorites(Ok(lists)) => {
                 if let Screen::Lists(ref mut state) = self.screen {
@@ -868,55 +867,22 @@ impl App {
             self.screen = Screen::Home(home);
         } else {
             self.screen = Screen::Home(HomeState::new());
-            self.start_fetch_problems();
         }
     }
 
-    fn start_fetch_problems(&mut self) {
-        if let Screen::Home(ref mut state) = self.screen {
-            state.loading = true;
-            state.error_message = None;
-
-            // Load cached problems for instant display
-            if let Some(cached) = load_cached_problems() {
-                state.total_problems = cached.len() as i32;
-                state.problems = cached;
-                state.rebuild_filter();
-            } else {
-                state.problems.clear();
-                state.filtered_indices.clear();
-                state.total_problems = 0;
-            }
-
-            let client = self.api_client.clone();
-            let tx = self.api_tx.clone();
-            const BATCH: i32 = 100;
-
-            tokio::spawn(async move {
-                let mut skip: i32 = 0;
-                loop {
-                    let result = client.fetch_problems(BATCH, skip, None, None).await;
-                    match result {
-                        Ok((batch, total)) => {
-                            let done = (batch.len() as i32) < BATCH
-                                || skip + (batch.len() as i32) >= total;
-                            let _ = tx.send(ApiResult::ProblemBatch {
-                                problems: batch,
-                                total,
-                                done,
-                            });
-                            if done {
-                                break;
-                            }
-                            skip += BATCH;
-                        }
-                        Err(e) => {
-                            let _ = tx.send(ApiResult::ProblemFetchError(format!("{e}")));
-                            break;
-                        }
-                    }
+    fn fire_search(&mut self) {
+        self.search_debounce = None;
+        if let Some(query) = self.pending_search_query.take() {
+            if query.is_empty() {
+                if let Screen::Home(ref mut state) = self.screen {
+                    state.problems.clear();
+                    state.filtered_indices.clear();
+                    state.search_total = 0;
+                    state.search_loading = false;
                 }
-            });
+                return;
+            }
+            self.start_search_fetch(&query);
         }
     }
 
@@ -926,7 +892,7 @@ impl App {
         let query = query.to_string();
 
         tokio::spawn(async move {
-            let result = client.fetch_problems(1, 0, None, Some(&query)).await;
+            let result = client.fetch_problems(50, 0, None, Some(&query)).await;
             let _ = tx.send(ApiResult::SearchResult(result));
         });
     }
@@ -1008,14 +974,26 @@ impl App {
     fn start_fetch_user_stats(&self) {
         let client = self.api_client.clone();
         let tx = self.api_tx.clone();
+        let has_tokens = self
+            .config
+            .as_ref()
+            .map(|c| c.is_authenticated())
+            .unwrap_or(false);
 
         tokio::spawn(async move {
             let username = client.fetch_username().await;
-            let stats = match username {
-                Some(name) => client.fetch_user_stats(&name).await.ok(),
-                None => None,
-            };
-            let _ = tx.send(ApiResult::UserStats(stats));
+            match username {
+                Some(name) => {
+                    let stats = client.fetch_user_stats(&name).await.ok();
+                    let _ = tx.send(ApiResult::UserStats(stats));
+                }
+                None if has_tokens => {
+                    let _ = tx.send(ApiResult::AuthExpired);
+                }
+                None => {
+                    let _ = tx.send(ApiResult::UserStats(None));
+                }
+            }
         });
     }
 
@@ -1073,6 +1051,10 @@ impl App {
 
         if config.language.eq_ignore_ascii_case("rust") {
             return extract_rust_solution(&content);
+        }
+
+        if config.language.eq_ignore_ascii_case("go") || config.language.eq_ignore_ascii_case("golang") {
+            return extract_go_solution(&content);
         }
 
         Ok(content)
@@ -1335,26 +1317,12 @@ impl App {
         match LeetCodeClient::new(session.as_deref(), csrf.as_deref()) {
             Ok(client) => {
                 self.api_client = client;
-                self.start_fetch_problems();
                 self.start_fetch_user_stats();
             }
             Err(e) => {
                 self.error_overlay = Some(format!("Failed to create client: {e}"));
             }
         }
-    }
-}
-
-fn load_cached_problems() -> Option<Vec<ProblemSummary>> {
-    let path = Config::cache_path();
-    let data = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&data).ok()
-}
-
-fn save_problems_cache(problems: &[ProblemSummary]) {
-    let path = Config::cache_path();
-    if let Ok(data) = serde_json::to_string(problems) {
-        let _ = std::fs::write(path, data);
     }
 }
 
@@ -1439,6 +1407,65 @@ fn extract_rust_solution(content: &str) -> Result<String> {
     let result = parts.join("\n").trim().to_string();
     if result.is_empty() {
         // Fallback: return original content if parsing produced nothing
+        Ok(content.to_string())
+    } else {
+        Ok(result)
+    }
+}
+
+/// Extract the solution portion of a Go file using tree-sitter.
+///
+/// Walks top-level AST nodes and keeps everything except:
+/// - Leading line comments (problem description)
+/// - `package` clause
+/// - `func main() { ... }`
+fn extract_go_solution(content: &str) -> Result<String> {
+    let mut parser = tree_sitter::Parser::new();
+    let language = tree_sitter_go::LANGUAGE;
+    parser
+        .set_language(&language.into())
+        .map_err(|e| anyhow::anyhow!("Failed to set tree-sitter language: {e}"))?;
+
+    let tree = parser
+        .parse(content, None)
+        .ok_or_else(|| anyhow::anyhow!("Failed to parse Go file"))?;
+
+    let root = tree.root_node();
+    let mut parts: Vec<&str> = Vec::new();
+    let mut in_leading_comments = true;
+
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        let kind = child.kind();
+        let text = &content[child.byte_range()];
+
+        // Skip leading line comments (problem description block)
+        if in_leading_comments && kind == "comment" {
+            continue;
+        }
+        if kind != "comment" {
+            in_leading_comments = false;
+        }
+
+        // Skip `package` clause
+        if kind == "package_clause" {
+            continue;
+        }
+
+        // Skip `func main() { ... }`
+        if kind == "function_declaration" {
+            if let Some(name_node) = child.child_by_field_name("name") {
+                if &content[name_node.byte_range()] == "main" {
+                    continue;
+                }
+            }
+        }
+
+        parts.push(text);
+    }
+
+    let result = parts.join("\n").trim().to_string();
+    if result.is_empty() {
         Ok(content.to_string())
     } else {
         Ok(result)

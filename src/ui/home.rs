@@ -33,7 +33,7 @@ impl FilterState {
     }
 
     fn item_count(&self) -> usize {
-        4 // Easy, Medium, Hard, Hide Solved
+        4
     }
 
     pub fn summary(&self) -> Option<String> {
@@ -53,16 +53,20 @@ impl FilterState {
     }
 }
 
+pub enum HomeFocus {
+    Search,
+    Table,
+}
+
 pub struct HomeState {
     pub table_state: TableState,
     pub problems: Vec<ProblemSummary>,
     pub filtered_indices: Vec<usize>,
     pub search_query: String,
-    pub search_mode: bool,
+    pub focus: HomeFocus,
     pub filter: FilterState,
-    pub loading: bool,
-    pub loading_buffer: Vec<ProblemSummary>,
-    pub total_problems: i32,
+    pub search_loading: bool,
+    pub search_total: i32,
     pub error_message: Option<String>,
     pub spinner_frame: usize,
     pub user_stats: Option<UserStats>,
@@ -75,11 +79,10 @@ impl HomeState {
             problems: Vec::new(),
             filtered_indices: Vec::new(),
             search_query: String::new(),
-            search_mode: false,
+            focus: HomeFocus::Search,
             filter: FilterState::new(),
-            loading: true,
-            loading_buffer: Vec::new(),
-            total_problems: 0,
+            search_loading: false,
+            search_total: 0,
             error_message: None,
             spinner_frame: 0,
             user_stats: None,
@@ -87,13 +90,11 @@ impl HomeState {
     }
 
     pub fn rebuild_filter(&mut self) {
-        let query = self.search_query.to_lowercase();
         self.filtered_indices = self
             .problems
             .iter()
             .enumerate()
             .filter(|(_, p)| {
-                // Difficulty filter
                 let diff_ok = match p.difficulty.as_str() {
                     "Easy" => self.filter.easy,
                     "Medium" => self.filter.medium,
@@ -103,23 +104,14 @@ impl HomeState {
                 if !diff_ok {
                     return false;
                 }
-
-                // Hide solved filter
                 if self.filter.hide_solved && p.status.as_deref() == Some("ac") {
                     return false;
                 }
-
-                // Search filter
-                if query.is_empty() {
-                    return true;
-                }
-                p.title.to_lowercase().contains(&query)
-                    || p.frontend_question_id == query
+                true
             })
             .map(|(i, _)| i)
             .collect();
 
-        // Keep selection in bounds
         if self.filtered_indices.is_empty() {
             self.table_state.select(None);
         } else if let Some(selected) = self.table_state.selected() {
@@ -141,12 +133,71 @@ impl HomeState {
         if self.filter.open {
             return self.handle_filter_key(key);
         }
-
-        if self.search_mode {
-            return self.handle_search_key(key);
+        match self.focus {
+            HomeFocus::Search => self.handle_search_key(key),
+            HomeFocus::Table => self.handle_table_key(key),
         }
+    }
 
+    fn handle_search_key(&mut self, key: KeyEvent) -> HomeAction {
         match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                HomeAction::Quit
+            }
+            KeyCode::Esc => {
+                if !self.search_query.is_empty() {
+                    self.search_query.clear();
+                    self.problems.clear();
+                    self.filtered_indices.clear();
+                    self.search_total = 0;
+                    self.error_message = None;
+                }
+                HomeAction::None
+            }
+            KeyCode::Enter => {
+                if !self.search_query.is_empty() {
+                    if !self.filtered_indices.is_empty() {
+                        self.focus = HomeFocus::Table;
+                    }
+                    HomeAction::SearchFetch(self.search_query.clone())
+                } else {
+                    HomeAction::None
+                }
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                if !self.filtered_indices.is_empty() {
+                    self.focus = HomeFocus::Table;
+                    if self.table_state.selected().is_none() {
+                        self.table_state.select(Some(0));
+                    }
+                }
+                HomeAction::None
+            }
+            KeyCode::Char(c) => {
+                self.search_query.push(c);
+                HomeAction::SearchFetch(self.search_query.clone())
+            }
+            KeyCode::Backspace => {
+                self.search_query.pop();
+                if self.search_query.is_empty() {
+                    self.problems.clear();
+                    self.filtered_indices.clear();
+                    self.search_total = 0;
+                    self.error_message = None;
+                    HomeAction::None
+                } else {
+                    HomeAction::SearchFetch(self.search_query.clone())
+                }
+            }
+            _ => HomeAction::None,
+        }
+    }
+
+    fn handle_table_key(&mut self, key: KeyEvent) -> HomeAction {
+        match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                HomeAction::Quit
+            }
             KeyCode::Char('q') => HomeAction::Quit,
             KeyCode::Char('j') | KeyCode::Down => {
                 self.move_selection(1);
@@ -164,14 +215,12 @@ impl HomeState {
             }
             KeyCode::Char('G') => {
                 if !self.filtered_indices.is_empty() {
-                    self.table_state
-                        .select(Some(self.filtered_indices.len() - 1));
+                    self.table_state.select(Some(self.filtered_indices.len() - 1));
                 }
                 HomeAction::None
             }
-            KeyCode::Char('/') => {
-                self.search_mode = true;
-                self.search_query.clear();
+            KeyCode::Char('/') | KeyCode::Esc => {
+                self.focus = HomeFocus::Search;
                 HomeAction::None
             }
             KeyCode::Char('f') => {
@@ -201,9 +250,6 @@ impl HomeState {
             }
             KeyCode::Char('L') => HomeAction::Lists,
             KeyCode::Char('S') => HomeAction::Settings,
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                HomeAction::Quit
-            }
             _ => HomeAction::None,
         }
     }
@@ -232,55 +278,6 @@ impl HomeState {
             }
             KeyCode::Enter | KeyCode::Esc | KeyCode::Char('f') => {
                 self.filter.open = false;
-                HomeAction::None
-            }
-            _ => HomeAction::None,
-        }
-    }
-
-    fn handle_search_key(&mut self, key: KeyEvent) -> HomeAction {
-        match key.code {
-            KeyCode::Esc => {
-                self.search_mode = false;
-                self.search_query.clear();
-                self.rebuild_filter();
-                HomeAction::None
-            }
-            KeyCode::Enter => {
-                self.search_mode = false;
-                // If no local results and query is numeric, fetch from API
-                if self.filtered_indices.is_empty()
-                    && !self.search_query.is_empty()
-                    && self.search_query.chars().all(|c| c.is_ascii_digit())
-                {
-                    let query = self.search_query.clone();
-                    self.search_query.clear();
-                    self.rebuild_filter();
-                    return HomeAction::SearchFetch(query);
-                }
-                // Enter also selects current item
-                if let Some(problem) = self.selected_problem() {
-                    return HomeAction::OpenDetail(problem.title_slug.clone());
-                }
-                HomeAction::None
-            }
-            KeyCode::Down | KeyCode::Up => {
-                let delta = if key.code == KeyCode::Down { 1 } else { -1 };
-                self.move_selection(delta);
-                HomeAction::None
-            }
-            KeyCode::Char(c) => {
-                self.search_query.push(c);
-                self.rebuild_filter();
-                HomeAction::None
-            }
-            KeyCode::Backspace => {
-                if self.search_query.is_empty() {
-                    self.search_mode = false;
-                } else {
-                    self.search_query.pop();
-                    self.rebuild_filter();
-                }
                 HomeAction::None
             }
             _ => HomeAction::None,
@@ -316,43 +313,51 @@ pub fn render_home(frame: &mut Frame, area: Rect, state: &mut HomeState) {
     let layout = Layout::vertical([
         Constraint::Length(1),            // title bar
         Constraint::Length(stats_height), // stats header
-        Constraint::Min(3),              // table
+        Constraint::Length(1),            // search bar
+        Constraint::Min(3),              // table / empty state
         Constraint::Length(1),           // status bar
     ])
     .split(area);
 
-    // Title bar
     render_title_bar(frame, layout[0], state);
 
-    // Stats header
     if let Some(ref stats) = state.user_stats {
         render_stats_header(frame, layout[1], stats);
     }
 
-    // Problem table
-    if state.loading && state.problems.is_empty() {
+    render_search_bar(frame, layout[2], state);
+
+    if state.search_loading && state.problems.is_empty() {
         let spinner = ["\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}"];
         let s = spinner[state.spinner_frame % spinner.len()];
-        let loading = Paragraph::new(format!(" {s} Loading problems..."))
+        let loading = Paragraph::new(format!("  {s} Searching..."))
             .style(Style::default().fg(Color::Yellow));
-        frame.render_widget(loading, layout[2]);
+        frame.render_widget(loading, layout[3]);
     } else if let Some(ref err) = state.error_message {
-        let error = Paragraph::new(format!(" Error: {err}"))
+        let error = Paragraph::new(format!("  Error: {err}"))
             .style(Style::default().fg(Color::Red));
-        frame.render_widget(error, layout[2]);
+        frame.render_widget(error, layout[3]);
+    } else if state.problems.is_empty() {
+        let msg = if state.search_query.is_empty() {
+            "  Type to search problems..."
+        } else {
+            "  No results found"
+        };
+        let p = Paragraph::new(msg)
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(p, layout[3]);
     } else {
-        render_table(frame, layout[2], state);
+        render_table(frame, layout[3], state);
     }
 
-    // Status bar
-    let hints = if state.search_mode {
-        vec![
-            ("Enter", "Apply"),
-            ("Esc", "Cancel"),
-            ("type", "Filter"),
-        ]
-    } else {
-        vec![
+    let hints = match state.focus {
+        HomeFocus::Search => vec![
+            ("Enter", "Search"),
+            ("Tab/\u{2193}", "Table"),
+            ("Esc", "Clear"),
+            ("?", "Help"),
+        ],
+        HomeFocus::Table => vec![
             ("j/k", "Navigate"),
             ("Enter", "View"),
             ("o", "Open"),
@@ -363,14 +368,30 @@ pub fn render_home(frame: &mut Frame, area: Rect, state: &mut HomeState) {
             ("S", "Settings"),
             ("q", "Quit"),
             ("?", "Help"),
-        ]
+        ],
     };
-    render_status_bar(frame, layout[3], &hints);
+    render_status_bar(frame, layout[4], &hints);
 
-    // Filter popup overlay
     if state.filter.open {
         render_filter_popup(frame, area, &state.filter);
     }
+}
+
+fn render_search_bar(frame: &mut Frame, area: Rect, state: &HomeState) {
+    let is_focused = matches!(state.focus, HomeFocus::Search);
+    let cursor = if is_focused { "\u{258e}" } else { "" };
+    let icon_style = if is_focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let line = Line::from(vec![
+        Span::styled("  / ", icon_style),
+        Span::styled(&state.search_query, Style::default().fg(Color::White)),
+        Span::styled(cursor, Style::default().fg(Color::Cyan)),
+    ]);
+    let bar = Paragraph::new(line).style(Style::default().bg(Color::Black));
+    frame.render_widget(bar, area);
 }
 
 fn render_stats_header(frame: &mut Frame, area: Rect, stats: &UserStats) {
@@ -382,7 +403,6 @@ fn render_stats_header(frame: &mut Frame, area: Rect, stats: &UserStats) {
     let total_solved = stats.easy_solved + stats.medium_solved + stats.hard_solved;
     let total_all = stats.easy_total + stats.medium_total + stats.hard_total;
 
-    // Row 0: username + total
     let line0 = Line::from(vec![
         Span::styled(
             format!("  {} ", stats.username),
@@ -395,7 +415,6 @@ fn render_stats_header(frame: &mut Frame, area: Rect, stats: &UserStats) {
     ]);
     frame.render_widget(Paragraph::new(line0), rows[0]);
 
-    // Row 1: Easy x/y  Med x/y  Hard x/y
     let line1 = Line::from(vec![
         Span::styled("  Easy ", Style::default().fg(Color::Green)),
         Span::styled(
@@ -430,42 +449,29 @@ fn render_title_bar(frame: &mut Frame, area: Rect, state: &HomeState) {
         Span::raw(" "),
     ];
 
-    if state.loading && !state.problems.is_empty() {
-        let spinner = ["\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}"];
-        let s = spinner[state.spinner_frame % spinner.len()];
+    if let Some(summary) = state.filter.summary() {
         spans.push(Span::styled(
-            format!("{s} Loading... {}/{} ", state.loading_buffer.len(), state.total_problems),
-            Style::default().fg(Color::Yellow),
+            format!("{summary} "),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
         ));
-    } else {
-        if let Some(summary) = state.filter.summary() {
-            spans.push(Span::styled(
-                format!("{summary} "),
-                Style::default()
-                    .fg(Color::Magenta)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
+    }
 
+    if !state.problems.is_empty() {
         spans.push(Span::styled(
-            format!(
-                "{} / {} problems",
-                state.filtered_indices.len(),
-                state.total_problems
-            ),
+            format!("{} / {} results", state.filtered_indices.len(), state.search_total),
             Style::default().fg(Color::DarkGray),
         ));
     }
 
-    if state.search_mode || !state.search_query.is_empty() {
-        spans.push(Span::raw("  "));
+    if state.search_loading {
+        let spinner = ["\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}"];
+        let s = spinner[state.spinner_frame % spinner.len()];
         spans.push(Span::styled(
-            format!("/{}", state.search_query),
-            Style::default().fg(Color::Cyan),
+            format!(" {s}"),
+            Style::default().fg(Color::Yellow),
         ));
-        if state.search_mode {
-            spans.push(Span::styled("\u{258e}", Style::default().fg(Color::Cyan)));
-        }
     }
 
     let title = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Black));
@@ -562,8 +568,8 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, filter: &FilterState) {
     ];
 
     let mut constraints: Vec<Constraint> = items.iter().map(|_| Constraint::Length(1)).collect();
-    constraints.push(Constraint::Length(1)); // blank
-    constraints.push(Constraint::Length(1)); // hint
+    constraints.push(Constraint::Length(1));
+    constraints.push(Constraint::Length(1));
     let rows = Layout::vertical(constraints).split(inner);
 
     for (i, ((label, checked, color), row)) in items.iter().zip(rows.iter()).enumerate() {
@@ -583,7 +589,6 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, filter: &FilterState) {
         frame.render_widget(Paragraph::new(line), *row);
     }
 
-    // Hint at bottom
     let hint = Paragraph::new(Line::from(Span::styled(
         "  Space: toggle  Esc: close",
         Style::default().fg(Color::DarkGray),
