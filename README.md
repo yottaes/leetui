@@ -8,8 +8,8 @@ A terminal-based interface for browsing, solving, and submitting LeetCode proble
 > ⚠️ **Disclaimer (Please read before judging my code):** > This is 100% a personal hobby project. The codebase is heavily AI-generated, held together by duct tape and prayers, and exists solely because I wanted a convenient way to do LeetCode. It is _not_ a polished product built for promotion, and it's definitely not supposed to impress anyone.
 > **A few crucial notes:**
 >
-> - Currently, and for an undefined amount of time, **this tool strictly supports Rust**.
-> - It proudly wears the "It Works On My Machine™" badge. Specifically, it has _only_ been tested with **Rust + Neovim (`nvim`) inside the Ghostty terminal**.
+> - Currently supports **Rust** and **Go** for scaffolding.
+> - It proudly wears the "It Works On My Machine™" badge. Specifically, it has _only_ been tested with **Neovim (`nvim`) inside the Ghostty terminal**.
 >
 > If you want to use it, fork it, or fix it—you're more than welcome! Just don't expect enterprise-grade architecture.
 
@@ -18,13 +18,12 @@ A terminal-based interface for browsing, solving, and submitting LeetCode proble
 
 ## Features
 
-- **Browse** all 3000+ problems with instant search and difficulty/status filters
+- **Search** problems by name or number with instant results
 - **Read** problem descriptions rendered directly in the terminal
-- **Scaffold** a Rust project with boilerplate for any problem, then open it in your editor
+- **Scaffold** a Rust or Go project with boilerplate for any problem, then open it in your editor
 - **Run & Submit** code against LeetCode test cases without leaving the terminal
 - **Personal Lists** synced with LeetCode -- browse, create, delete, and add problems
 - **Stats** -- your solve counts right in the home screen
-- **Disk cache** for instant startup with background refresh
 - Press `?` on any screen for all available keybindings
 
 ## Installation
@@ -116,12 +115,12 @@ Press `?` on any screen for the full keybinding reference. Here are the essentia
 Settings are stored in `~/.leetcode-cli/config.toml`. You can edit them from within the app by pressing `S`, or edit the file directly:
 
 - **workspace_dir** -- where scaffolded projects are created (default: `~/leetcode`)
-- **language** -- `rust` _(Note: other languages might appear here, but only Rust is supported/tested)_
+- **language** -- `rust` or `golang` (scaffolding support)
 - **editor** -- command to open files (default: `nvim`)
 
 ## Contributing
 
-This is a hobby project and I'm strictly prioritizing Rust-specific features. That said:
+This is a hobby project. That said:
 
 - Feel free to **fork** the repo and do whatever you want with it
 - PRs are welcome -- submit directly, no need to open an issue first
