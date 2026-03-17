@@ -13,7 +13,29 @@ pub struct Config {
     pub csrf_token: Option<String>,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            workspace_dir: "~/leetcode".to_string(),
+            language: "rust".to_string(),
+            editor: "vim".to_string(),
+            leetcode_session: None,
+            csrf_token: None,
+        }
+    }
+}
+
 impl Config {
+    /// Creates a default config, saves it to disk, and ensures the workspace directory exists.
+    pub fn create_default() -> Result<Config> {
+        let config = Config::default();
+        config.save()?;
+        let workspace = config.expanded_workspace();
+        std::fs::create_dir_all(&workspace)
+            .with_context(|| format!("Failed to create workspace dir {}", workspace.display()))?;
+        Ok(config)
+    }
+
     pub fn is_authenticated(&self) -> bool {
         self.leetcode_session.as_ref().is_some_and(|s| !s.is_empty())
             && self.csrf_token.as_ref().is_some_and(|s| !s.is_empty())
@@ -27,10 +49,6 @@ impl Config {
 
     pub fn config_path() -> PathBuf {
         Self::config_dir().join("config.toml")
-    }
-
-    pub fn cache_path() -> PathBuf {
-        Self::config_dir().join("problems.json")
     }
 
     pub fn load() -> Result<Option<Config>> {

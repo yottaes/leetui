@@ -1,3 +1,4 @@
+pub mod go;
 pub mod rust;
 
 use anyhow::{Result, bail};
@@ -12,6 +13,7 @@ pub fn scaffold_problem(
 ) -> Result<PathBuf> {
     match language {
         "rust" => rust::scaffold_rust(workspace, detail),
+        "go" | "golang" => go::scaffold_go(workspace, detail),
         _ => bail!("Unsupported language for scaffolding: {}", language),
     }
 }
